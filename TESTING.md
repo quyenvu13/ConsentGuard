@@ -125,3 +125,18 @@ Local static smoke: PASS
 Local mock UI paths: PENDING browser capture in this package build
 Fresh Vercel/MetaMask runtime: PENDING
 ```
+
+## Observed production runtime — PASS (Sep 1, 2026)
+
+Contract: `0xB13A47565248c9A11A74b2C20D71aB930960B8a2`
+
+Test user: `0x188f15bC55302ff2d55f0107300499aed23a831E`
+
+Observed:
+
+1. `consent()` reached `Accepted`, GenVM `SUCCESS`, Result Code `Return`, and `Finalized` at consent epoch 1.
+2. A subsequent `protected_action()` reached `Finalized` with `FINISHED_WITH_RETURN`.
+3. The Vercel UI automatically changed to `ALLOWED` without F5/reload.
+4. The frontend no longer uses the current Studio RPC's failing Address-parameter `gen_call` views in production. This avoids misleading console errors while preserving contract enforcement as the source of truth.
+
+Runtime PASS is based on finalized GenVM execution, not on wallet acceptance or transaction hash submission alone.
