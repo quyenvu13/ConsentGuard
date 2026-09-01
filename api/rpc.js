@@ -1,5 +1,5 @@
 const UPSTREAM = 'https://studio.genlayer.com/api';
-const SAFE_RETRY_METHODS = new Set(['eth_getTransactionReceipt','eth_getTransactionByHash','eth_getBalance','eth_call','eth_chainId','net_version','gen_call','gen_get_transaction_status','gen_getTransactionStatus','gen_getTransactionReceipt','gen_dbg_traceTransaction']);
+const SAFE_RETRY_METHODS = new Set(['eth_getTransactionReceipt','eth_getTransactionByHash','eth_getBalance','eth_call','eth_chainId','net_version','gen_call','gen_getTransactionStatus','gen_getTransactionReceipt']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default async function handler(req, res) {
@@ -12,7 +12,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
   const payload = req.body;
   const method = Array.isArray(payload) ? undefined : payload?.method;
-  const attempts = typeof method === 'string' && SAFE_RETRY_METHODS.has(method) ? 4 : 1;
+  const attempts = typeof method === 'string' && SAFE_RETRY_METHODS.has(method) ? 2 : 1;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const upstream = await fetch(UPSTREAM, {
