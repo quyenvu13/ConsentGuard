@@ -75,10 +75,27 @@ npm run test:local
 
 ## Testing status
 
-Static build and local mock/smoke checks are documented in `TESTING.md`. Fresh production wallet/runtime evidence on Vercel must be recorded only after it is actually observed; this repository does not claim unperformed production transactions.
+Production runtime verification on Vercel is **PASS** against the fresh StudioNet deployment. The full observed sequence is documented in `TESTING.md`.
 
 ## Production runtime verification — Sep 1, 2026
 
-Fresh Vercel testing against contract `0xB13A47565248c9A11A74b2C20D71aB930960B8a2` verified the user-consent gate end to end. Test user `0x188f15bC55302ff2d55f0107300499aed23a831E` finalized `consent()` successfully at consent epoch 1, then finalized `protected_action()` with `FINISHED_WITH_RETURN`; the production UI automatically transitioned to `ALLOWED` without a page refresh.
+Deployment:
 
-The current Studio RPC rejects parameterized `gen_call` reads that include an `Address` argument (`has_valid_consent(user)` and `get_action_count(user)`). The production frontend therefore does not poll those optional views. It verifies protected-action execution from the finalized GenVM result instead, while immutable/global state continues to come from `get_summary()`.
+```text
+Contract: 0xB13A47565248c9A11A74b2C20D71aB930960B8a2
+Publisher/deployer: 0x923a09d0D6e5C242e36C3c1D2071835917cC0bDF
+Test user: 0x188f15bC55302ff2d55f0107300499aed23a831E
+```
+
+Observed end-to-end behavior:
+
+1. The test user consented to epoch 1 and `protected_action()` finalized with `FINISHED_WITH_RETURN`; the UI automatically showed `ALLOWED` without a page refresh.
+2. The publisher submitted a wording-only update. Validators returned `NON_MATERIAL_CHANGE`; `active_version` advanced from 1 to 2 while `consent_epoch` remained 1.
+3. The publisher then submitted a substantive rights change. Validators returned `MATERIAL_CHANGE`; `active_version` advanced from 2 to 3 and `consent_epoch` advanced from 1 to 2.
+4. Before re-consenting, the same test user called `protected_action()`. The contract finalized with `FINISHED_WITH_ERROR`, the UI showed `BLOCKED`, and the error message stated `Current terms consent is required.`
+5. The user consented to epoch 2. The UI showed `VALID CONSENT`.
+6. The user called `protected_action()` again. It finalized with `FINISHED_WITH_RETURN` and the UI automatically showed `ALLOWED`.
+
+This demonstrates the full intended safety property: non-material wording changes preserve consent, material semantic changes invalidate stale consent, and deterministic contract enforcement blocks protected actions until the user explicitly consents to the new epoch.
+
+The current Studio RPC rejects Address-argument `gen_call` reads used by `has_valid_consent(user)` and `get_action_count(user)`. Production therefore does not depend on those optional parameterized views. Global state still comes from `get_summary()`, while write outcomes are verified from finalized GenVM execution.

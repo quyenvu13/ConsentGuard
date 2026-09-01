@@ -122,21 +122,88 @@ Expected: consent becomes valid for the new epoch and action count increments.
 Contract source parity: PASS
 Static production build: PASS
 Local static smoke: PASS
-Local mock UI paths: PENDING browser capture in this package build
-Fresh Vercel/MetaMask runtime: PENDING
+Production console clean: PASS
+Vercel + MetaMask runtime: PASS
+NON_MATERIAL_CHANGE path: PASS
+MATERIAL_CHANGE path: PASS
+Stale-consent rejection: PASS
+Re-consent recovery: PASS
+Automatic FINALIZED UI update without F5: PASS
 ```
 
 ## Observed production runtime — PASS (Sep 1, 2026)
 
-Contract: `0xB13A47565248c9A11A74b2C20D71aB930960B8a2`
+```text
+Contract: 0xB13A47565248c9A11A74b2C20D71aB930960B8a2
+Publisher/deployer: 0x923a09d0D6e5C242e36C3c1D2071835917cC0bDF
+Test user: 0x188f15bC55302ff2d55f0107300499aed23a831E
+```
 
-Test user: `0x188f15bC55302ff2d55f0107300499aed23a831E`
+### A. Initial user consent and allowed action
 
-Observed:
+The test user finalized `consent()` at consent epoch 1. Explorer showed Consensus `Accepted`, GenVM `SUCCESS`, Result Code `Return`, and `Finalized`. A subsequent `protected_action()` finalized with `FINISHED_WITH_RETURN`, and the production UI automatically displayed `ALLOWED` without F5.
 
-1. `consent()` reached `Accepted`, GenVM `SUCCESS`, Result Code `Return`, and `Finalized` at consent epoch 1.
-2. A subsequent `protected_action()` reached `Finalized` with `FINISHED_WITH_RETURN`.
-3. The Vercel UI automatically changed to `ALLOWED` without F5/reload.
-4. The frontend no longer uses the current Studio RPC's failing Address-parameter `gen_call` views in production. This avoids misleading console errors while preserving contract enforcement as the source of truth.
+### B. NON_MATERIAL_CHANGE preserves consent epoch
 
-Runtime PASS is based on finalized GenVM execution, not on wallet acceptance or transaction hash submission alone.
+Publisher proposal:
+
+```text
+Users may access the service for personal or commercial purposes. The service may collect basic account information that is required for operation. Users retain ownership of content they submit. The provider may suspend accounts only for security incidents, fraud, or violations of these terms. Material changes to these terms require renewed user consent before protected actions may continue.
+```
+
+Observed result:
+
+```text
+Verdict: NON_MATERIAL_CHANGE
+active_version: 1 -> 2
+consent_epoch: 1 -> 1
+```
+
+The UI updated automatically after the transaction; no page refresh was required.
+
+### C. MATERIAL_CHANGE advances consent epoch
+
+Publisher proposal:
+
+```text
+Users may access the service for personal or commercial purposes. The service may collect basic account information that is required for operation. Users retain ownership of content they submit, but the provider may now use, reproduce, modify, sublicense, and commercially distribute submitted content without additional permission from the user. The provider may suspend accounts only for security incidents, fraud, or violations of these terms. Material changes to these terms require renewed user consent before protected actions may continue.
+```
+
+Observed result:
+
+```text
+Verdict: MATERIAL_CHANGE
+active_version: 2 -> 3
+consent_epoch: 1 -> 2
+```
+
+### D. Stale consent is blocked
+
+Without re-consenting, the same test user called `protected_action()`.
+
+Observed result:
+
+```text
+GenVM: FINISHED_WITH_ERROR
+UI: BLOCKED
+Message: Current terms consent is required.
+```
+
+This proves epoch-1 consent no longer authorizes protected actions after the material change moved the contract to epoch 2.
+
+### E. Re-consent restores access
+
+The test user then consented to epoch 2. The UI displayed `VALID CONSENT`. A final `protected_action()` produced:
+
+```text
+GenVM: FINISHED_WITH_RETURN
+UI: ALLOWED
+```
+
+The UI transitioned automatically from transaction submission to the final state without F5.
+
+## Runtime/RPC note
+
+The current Studio RPC rejects Address-argument `gen_call` reads for `has_valid_consent(user)` and `get_action_count(user)`. These optional parameterized reads are intentionally disabled in production to avoid repeated `gen_call: execution failed` console noise. Contract enforcement is still verified directly through finalized write execution, and immutable/global state continues to load from `get_summary()`.
+
+Runtime PASS is based on finalized GenVM execution and authoritative contract state, not on wallet acceptance or transaction-hash submission alone.
