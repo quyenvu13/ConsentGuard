@@ -53,17 +53,66 @@ async function getTransactionStatusRpc(hash){
 async function getTransactionReceiptRpc(hash){
   return await rawRpc('gen_getTransactionReceipt',[{txId:hash}]);
 }
-function executionName(r){return r?.txExecutionResultName??'';}
+function executionName(r){
+  const direct=r?.txExecutionResultName??r?.tx_execution_result_name??'';
+  if(direct)return String(direct).toUpperCase();
+  const cd=r?.consensus_data??r?.consensusData;
+  const lr0=cd?.leader_receipt??cd?.leaderReceipt;
+  const lr=Array.isArray(lr0)?lr0[0]:lr0;
+  const raw=lr?.execution_result??lr?.executionResult??'';
+  const v=String(raw||'').trim().toUpperCase();
+  if(v==='SUCCESS'||v==='RETURN'||v==='FINISHED_WITH_RETURN')return 'FINISHED_WITH_RETURN';
+  if(v==='ERROR'||v==='FAILED'||v==='USER_ERROR'||v==='VM_ERROR'||v==='FINISHED_WITH_ERROR')return 'FINISHED_WITH_ERROR';
+  return '';
+}
 function txExecutionFailed(r){return executionName(r)==='FINISHED_WITH_ERROR';}
 function txExecutionSucceeded(r){return executionName(r)==='FINISHED_WITH_RETURN';}
-async function resolveExecutionResult(client,hash,receipt){
- let name=executionName(receipt);
- if(name)return{name,receipt};
- try{const tx=await client.getTransaction({hash});name=executionName(tx);if(name)return{name,receipt:tx};}catch{}
- try{const trace=await client.debugTraceTransaction({hash,round:0});const code=Number(trace?.result_code);if(code===0)return{name:'FINISHED_WITH_RETURN',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_RETURN',traceResultCode:0}};if(code===1||code===2)return{name:'FINISHED_WITH_ERROR',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_ERROR',traceResultCode:code,traceStderr:trace?.stderr??''}};}catch{}
- try{const trace=await rawRpc('gen_dbg_traceTransaction',[{txID:hash,round:0}]);const code=Number(trace?.result_code);if(code===0)return{name:'FINISHED_WITH_RETURN',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_RETURN',traceResultCode:0}};if(code===1||code===2)return{name:'FINISHED_WITH_ERROR',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_ERROR',traceResultCode:code,traceStderr:trace?.stderr??''}};}catch{}
- return{name:'',receipt};
+function txStatusName(r){
+  const raw=r?.statusName??r?.status_name??r?.status??'';
+  if(typeof raw==='number')return TX_STATUS_BY_CODE[raw]||String(raw);
+  if(typeof raw==='string'){
+    const t=raw.trim();
+    if(/^0x[0-9a-f]+$/i.test(t))return TX_STATUS_BY_CODE[Number.parseInt(t,16)]||t.toUpperCase();
+    if(/^\d+$/.test(t))return TX_STATUS_BY_CODE[Number(t)]||t;
+    return t.toUpperCase();
+  }
+  return '';
 }
+async function fetchRawTransaction(hash){
+  try{return await rawRpc('eth_getTransactionByHash',[hash]);}catch{return null;}
+}
+async function waitFinalized(hash){
+  if(MOCK){
+    const c=makeMockClient();
+    return await c.waitForTransactionReceipt({hash,status:'FINALIZED',fullTransaction:false});
+  }
+  const c=await readClient();
+  let finalizedSeen=false;
+  for(let i=0;i<150;i++){
+    let tx=null;
+    try{tx=await c.getTransaction({hash});}catch{}
+    let status=txStatusName(tx);
+    let name=executionName(tx);
+    if(name==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
+    if((status==='FINALIZED'||finalizedSeen)&&name==='FINISHED_WITH_RETURN')return tx;
+    if(status==='FINALIZED')finalizedSeen=true;
+
+    if(finalizedSeen){
+      const raw=await fetchRawTransaction(hash);
+      name=executionName(raw);
+      if(name==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
+      if(name==='FINISHED_WITH_RETURN')return raw;
+      notice=`Transaction ${short(hash)} · FINALIZED · loading execution result…`;
+    }else{
+      notice=`Transaction ${short(hash)} · ${status||'processing'}…`;
+    }
+    error='';
+    await render();
+    await sleep(2000);
+  }
+  throw new Error('Transaction monitoring timed out. Do not resubmit; verify the existing hash in Explorer.');
+}
+
 function sessionConsentValid(){return Boolean(walletAddress&&summaryCache&&sessionConsent.wallet.toLowerCase()===walletAddress.toLowerCase()&&Number(sessionConsent.epoch)===Number(summaryCache.consent_epoch));}
 function effectiveConsent(){if(consentCache===true)return true;if(consentCache===false)return false;if(sessionConsentValid())return true;return null;}
 
@@ -78,53 +127,9 @@ function makeMockClient(){return{
 async function sdk(){if(MOCK)return null;if(!sdkCache)sdkCache=Promise.all([import(SDK.main),import(SDK.chains),import(SDK.types)]).then(([main,chains,types])=>({main,chains,types}));return sdkCache;}
 async function readClient(){if(MOCK)return makeMockClient();const {main,chains}=await sdk();return main.createClient({chain:chains.studionet,endpoint:`${location.origin}/api/rpc`});}
 async function walletClient(){if(MOCK){walletAddress=MOCK_WALLETS[mock.wallet];return{client:makeMockClient(),account:walletAddress};}if(!window.ethereum)throw new Error('MetaMask was not detected.');const accounts=await window.ethereum.request({method:'eth_requestAccounts'});const account=accounts?.[0];if(!account)throw new Error('No wallet account selected.');const{main,chains}=await sdk();const client=main.createClient({chain:chains.studionet,account,provider:window.ethereum});await client.connect('studionet');walletAddress=account;return{client,account};}
-async function waitFinalized(hash){
-  if(MOCK){
-    const c=makeMockClient();
-    const receipt=await c.waitForTransactionReceipt({hash,status:'FINALIZED',fullTransaction:false});
-    if(executionName(receipt)==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
-    return receipt;
-  }
-
-  const c=await readClient();
-  const {types}=await sdk();
-  notice=`Transaction ${short(hash)} · waiting for FINALIZED…`;
-  error='';
-  await render();
-
-  const receipt=await c.waitForTransactionReceipt({
-    hash,
-    status:types.TransactionStatus?.FINALIZED??'FINALIZED',
-    fullTransaction:false,
-    interval:5000,
-    retries:120,
-  });
-
-  let name=executionName(receipt);
-  if(!name){
-    for(let i=0;i<8&&!name;i++){
-      try{
-        const tx=await c.getTransaction({hash});
-        name=executionName(tx);
-        if(name==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
-        if(name==='FINISHED_WITH_RETURN')return tx;
-      }catch(e){
-        if(/contract reverted/i.test(String(e?.message??e)))throw e;
-      }
-      notice=`Transaction ${short(hash)} · FINALIZED · waiting for execution result…`;
-      await render();
-      await sleep(2500);
-    }
-  }
-
-  if(name==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
-  if(name==='FINISHED_WITH_RETURN')return receipt;
-  throw new Error('Transaction is FINALIZED, but the GenLayer RPC has not exposed its execution result yet.');
-}
-
 async function write(functionName,args=[],message='Submitting transaction…'){const{client}=await walletClient();busy=true;error='';notice=message;await render();try{const hash=await client.writeContract({address:CONTRACT,functionName,args,value:0n});notice=`Submitted ${short(hash)}. Waiting for FINALIZED…`;await render();const receipt=await waitFinalized(hash);notice=`FINALIZED · ${executionName(receipt)||'FINISHED_WITH_RETURN'}`;return{hash,receipt};}catch(e){error=friendly(e);notice='';throw e;}finally{busy=false;}}
 async function loadSummary(){const c=await readClient();summaryCache=parseSummary(await c.readContract({address:CONTRACT,functionName:'get_summary',args:[]}));return summaryCache;}
-async function loadUserState(user){if(!validAddress(user)){consentCache=null;actionCountCache=null;return;}const c=await readClient();let anyOk=false;try{consentCache=asBool(await c.readContract({address:CONTRACT,functionName:'has_valid_consent',args:[user]}));anyOk=true;}catch{consentCache=null;}try{actionCountCache=Number(parseResult(await c.readContract({address:CONTRACT,functionName:'get_action_count',args:[user]})));anyOk=true;}catch{actionCountCache=null;}parameterReadsAvailable=anyOk;}
+async function loadUserState(user){if(!validAddress(user)){consentCache=null;actionCountCache=null;return;}if(!parameterReadsAvailable){consentCache=null;actionCountCache=null;return;}const c=await readClient();let anyOk=false;try{consentCache=asBool(await c.readContract({address:CONTRACT,functionName:'has_valid_consent',args:[user]}));anyOk=true;}catch{consentCache=null;}try{actionCountCache=Number(parseResult(await c.readContract({address:CONTRACT,functionName:'get_action_count',args:[user]})));anyOk=true;}catch{actionCountCache=null;}if(!anyOk)parameterReadsAvailable=false;}
 
 function shell(content){return`${MOCK?`<div class="mockbar">LOCAL MOCK MODE · <select id="mock-wallet"><option value="0">Publisher</option><option value="1">User 2</option><option value="2">User 3</option></select></div>`:''}<header class="header"><div class="container header-inner"><button class="brand" data-nav="/"><img src="/logo-64.png" alt="ConsentGuard logo"><span><div class="brand-name">ConsentGuard</div><div class="brand-sub">GenLayer StudioNet</div></span></button><nav class="nav"><button data-nav="/">Overview</button><button data-nav="/terms">Terms</button><button data-nav="/consent">Consent</button><button data-nav="/actions">Protected actions</button></nav><button id="wallet" class="wallet-btn">◈ ${esc(walletAddress?short(walletAddress):'Connect wallet')}</button></div></header>${(notice||error)?`<div class="container notice-wrap">${notice?`<div class="notice">${esc(notice)}</div>`:''}${error?`<div class="error">${esc(error)}</div>`:''}</div>`:''}${content}<footer class="footer"><div class="container footer-inner"><div>AI classifies semantic change. Consent epochs and action gates remain deterministic.</div><a class="mono" target="_blank" rel="noreferrer" href="${EXPLORER_BASE}${CONTRACT}">${short(CONTRACT)} ↗</a></div></footer>`;}
 function protocolCard(summary){return`<div class="panel panel-pad"><div class="live-head"><div><div class="eyebrow">LIVE PROTOCOL</div><h2>Consent epoch guard</h2></div><span class="live-dot">● LIVE</span></div><div class="stats"><div class="stat"><div class="stat-label">ACTIVE VERSION</div><div class="stat-value">${summary?.active_version??'—'}</div></div><div class="stat"><div class="stat-label">CONSENT EPOCH</div><div class="stat-value">${summary?.consent_epoch??'—'}</div></div><div class="stat"><div class="stat-label">LAST DECISION</div><div style="margin-top:10px">${badge(summary?.last_decision||'')}</div></div></div><div class="decision-row"><span class="muted">Contract</span><a class="contract-link mono" target="_blank" rel="noreferrer" href="${EXPLORER_BASE}${CONTRACT}">${short(CONTRACT)} ↗</a></div></div>`;}
