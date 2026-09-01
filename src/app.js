@@ -37,21 +37,21 @@ async function rawRpc(method,params=[]){
   return body?.result;
 }
 function normalizedTxStatus(v){
-  const raw=v?.status??v?.statusName??v;
+  const raw=v?.status??v?.statusName??v?.statusCode??v;
   if(typeof raw==='number')return TX_STATUS_BY_CODE[raw]||String(raw);
   if(typeof raw==='string'){
-    if(/^\d+$/.test(raw))return TX_STATUS_BY_CODE[Number(raw)]||raw;
-    return raw.toUpperCase();
+    const t=raw.trim();
+    if(/^0x[0-9a-f]+$/i.test(t))return TX_STATUS_BY_CODE[Number.parseInt(t,16)]||t.toUpperCase();
+    if(/^\d+$/.test(t))return TX_STATUS_BY_CODE[Number(t)]||t;
+    return t.toUpperCase();
   }
-  if(typeof v?.statusCode==='number')return TX_STATUS_BY_CODE[v.statusCode]||String(v.statusCode);
   return '';
 }
 async function getTransactionStatusRpc(hash){
-  let last;
-  for(const method of ['gen_getTransactionStatus','gen_get_transaction_status']){
-    try{return normalizedTxStatus(await rawRpc(method,[{txId:hash}]));}catch(e){last=e;}
-  }
-  throw last||new Error('Unable to query transaction status');
+  return normalizedTxStatus(await rawRpc('gen_getTransactionStatus',[{txId:hash}]));
+}
+async function getTransactionReceiptRpc(hash){
+  return await rawRpc('gen_getTransactionReceipt',[{txId:hash}]);
 }
 function executionName(r){return r?.txExecutionResultName??'';}
 function txExecutionFailed(r){return executionName(r)==='FINISHED_WITH_ERROR';}
@@ -78,56 +78,89 @@ function makeMockClient(){return{
 async function sdk(){if(MOCK)return null;if(!sdkCache)sdkCache=Promise.all([import(SDK.main),import(SDK.chains),import(SDK.types)]).then(([main,chains,types])=>({main,chains,types}));return sdkCache;}
 async function readClient(){if(MOCK)return makeMockClient();const {main,chains}=await sdk();return main.createClient({chain:chains.studionet,endpoint:`${location.origin}/api/rpc`});}
 async function walletClient(){if(MOCK){walletAddress=MOCK_WALLETS[mock.wallet];return{client:makeMockClient(),account:walletAddress};}if(!window.ethereum)throw new Error('MetaMask was not detected.');const accounts=await window.ethereum.request({method:'eth_requestAccounts'});const account=accounts?.[0];if(!account)throw new Error('No wallet account selected.');const{main,chains}=await sdk();const client=main.createClient({chain:chains.studionet,account,provider:window.ethereum});await client.connect('studionet');walletAddress=account;return{client,account};}
-async function waitFinalized(hash){
- const c=await readClient();
- if(MOCK){
-   const receipt=await c.waitForTransactionReceipt({hash,status:'FINALIZED',fullTransaction:false});
-   const name=executionName(receipt);
-   if(name==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
-   return receipt;
- }
- let lastStatus='',lastError=null;
- for(let i=0;i<120;i++){
-   let status='';
-   try{status=await getTransactionStatusRpc(hash);}catch(e){lastError=e;}
-   if(status&&status!==lastStatus){
-     lastStatus=status;
-     notice=`Transaction ${short(hash)} · ${status}${status==='FINALIZED'?' · verifying GenVM result…':'…'}`;
-     error='';
-     await render();
-   }
-   if(['CANCELED','VALIDATORS_TIMEOUT','LEADER_TIMEOUT','UNDETERMINED'].includes(status)){
-     throw new Error(`Transaction ended with status ${status}`);
-   }
-   if(status==='FINALIZED'){
-     for(let j=0;j<24;j++){
-       const resolved=await resolveExecutionResult(c,hash,{status:'FINALIZED'});
-       if(resolved.name==='FINISHED_WITH_ERROR'){
-         const detail=resolved.receipt?.traceStderr?`: ${resolved.receipt.traceStderr}`:'';
-         throw new Error(`Contract reverted (FINISHED_WITH_ERROR)${detail}`);
-       }
-       if(resolved.name==='FINISHED_WITH_RETURN')return resolved.receipt;
-       notice=`Transaction ${short(hash)} · FINALIZED · loading GenVM result…`;
-       error='';
-       await render();
-       await sleep(1500);
-     }
-     throw new Error('Transaction is FINALIZED, but the Studio RPC has not exposed the GenVM execution result yet.');
-   }
-   if(!status&&i%4===0){
-     try{
-       const{types}=await sdk();
-       const base=await c.waitForTransactionReceipt({hash,status:types.TransactionStatus?.FINALIZED??'FINALIZED',fullTransaction:false,interval:2500,retries:1});
-       const resolved=await resolveExecutionResult(c,hash,base);
-       if(resolved.name==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
-       if(resolved.name==='FINISHED_WITH_RETURN')return resolved.receipt;
-     }catch(e){lastError=e;}
-   }
-   await sleep(2500);
- }
- throw new Error(`Finalization timeout${lastStatus?` (last status: ${lastStatus})`:''}${lastError?`: ${friendly(lastError)}`:''}`);
+async function walletRpc(method,params=[]){
+  if(!window.ethereum?.request)throw new Error('Wallet provider is unavailable');
+  return await window.ethereum.request({method,params});
 }
-async function write(functionName,args=[],message='Submitting transaction…'){const{client}=await walletClient();busy=true;error='';notice=message;await render();try{const hash=await client.writeContract({address:CONTRACT,functionName,args,value:0n});notice=`Submitted ${short(hash)}. Waiting for FINALIZED…`;await render();const receipt=await waitFinalized(hash);notice=`FINALIZED · ${executionName(receipt)||'FINISHED_WITH_RETURN'}`;return{hash,receipt};}catch(e){error=friendly(e);notice='';throw e;}finally{busy=false;}}
+async function resolveExecutionResultFromSubmitPath(submitClient,hash,receipt){
+  let name=executionName(receipt);
+  if(name)return{name,receipt};
+  try{const tx=await submitClient.getTransaction({hash});name=executionName(tx);if(name)return{name,receipt:tx};}catch{}
+  try{const trace=await submitClient.debugTraceTransaction({hash,round:0});const code=Number(trace?.result_code);if(code===0)return{name:'FINISHED_WITH_RETURN',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_RETURN',traceResultCode:0}};if(code===1||code===2)return{name:'FINISHED_WITH_ERROR',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_ERROR',traceResultCode:code,traceStderr:trace?.stderr??''}};}catch{}
+  try{const trace=await walletRpc('gen_dbg_traceTransaction',[{txID:hash,round:0}]);const code=Number(trace?.result_code);if(code===0)return{name:'FINISHED_WITH_RETURN',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_RETURN',traceResultCode:0}};if(code===1||code===2)return{name:'FINISHED_WITH_ERROR',receipt:{...receipt,txExecutionResultName:'FINISHED_WITH_ERROR',traceResultCode:code,traceStderr:trace?.stderr??''}};}catch{}
+  return{name:'',receipt};
+}
+async function waitFinalized(hash,submitClient){
+  if(MOCK){
+    const receipt=await submitClient.waitForTransactionReceipt({hash,status:'FINALIZED',fullTransaction:false});
+    if(executionName(receipt)==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
+    return receipt;
+  }
+
+  // Primary path: poll the SAME MetaMask/provider RPC that submitted the tx.
+  // This avoids cross-node lag between the wallet RPC, Vercel proxy and Explorer.
+  let providerSupportsGenStatus=true;
+  let lastStatus='';
+  for(let i=0;i<210;i++){
+    if(providerSupportsGenStatus){
+      try{
+        const status=normalizedTxStatus(await walletRpc('gen_getTransactionStatus',[{txId:hash}]));
+        if(status&&status!==lastStatus){
+          lastStatus=status;
+          notice=`Transaction ${short(hash)} · ${status}${status==='FINALIZED'?' · verifying GenVM result…':'…'}`;
+          error='';
+          await render();
+        }
+        if(['CANCELED','VALIDATORS_TIMEOUT','LEADER_TIMEOUT','UNDETERMINED'].includes(status))throw new Error(`Transaction ended with status ${status}`);
+        if(status==='FINALIZED'){
+          let receipt={status:'FINALIZED'};
+          try{receipt=await walletRpc('gen_getTransactionReceipt',[{txId:hash}])||receipt;}catch{}
+          for(let j=0;j<30;j++){
+            const resolved=await resolveExecutionResultFromSubmitPath(submitClient,hash,receipt);
+            if(resolved.name==='FINISHED_WITH_ERROR'){
+              const detail=resolved.receipt?.traceStderr?`: ${resolved.receipt.traceStderr}`:'';
+              throw new Error(`Contract reverted (FINISHED_WITH_ERROR)${detail}`);
+            }
+            if(resolved.name==='FINISHED_WITH_RETURN')return resolved.receipt;
+            notice=`Transaction ${short(hash)} · FINALIZED · loading GenVM result…`;
+            await render();
+            await sleep(1200);
+          }
+          throw new Error('Transaction finalized, but GenVM execution result is not available from the submitting wallet RPC yet.');
+        }
+      }catch(e){
+        const msg=String(e?.message??e).toLowerCase();
+        // -32601 / unsupported method: fall back once to the official SDK waiter
+        // on the same wallet client, not to the Vercel read proxy.
+        if(/method not found|unsupported|does not exist|-32601/.test(msg))providerSupportsGenStatus=false;
+        else if(/transaction ended with status|contract reverted/i.test(String(e?.message??e)))throw e;
+      }
+    }
+
+    if(!providerSupportsGenStatus){
+      try{
+        const{types}=await sdk();
+        const receipt=await submitClient.waitForTransactionReceipt({
+          hash,
+          status:types.TransactionStatus?.FINALIZED??'FINALIZED',
+          fullTransaction:false,
+          interval:2000,
+          retries:210,
+        });
+        const resolved=await resolveExecutionResultFromSubmitPath(submitClient,hash,receipt);
+        if(resolved.name==='FINISHED_WITH_ERROR')throw new Error('Contract reverted (FINISHED_WITH_ERROR)');
+        if(resolved.name==='FINISHED_WITH_RETURN')return resolved.receipt;
+        throw new Error('Transaction FINALIZED but execution result is unavailable from the wallet client.');
+      }catch(e){
+        if(/contract reverted|finalized but execution/i.test(String(e?.message??e)))throw e;
+      }
+    }
+    await sleep(2000);
+  }
+  throw new Error(`Finalization timeout${lastStatus?` (last status: ${lastStatus})`:''}`);
+}
+
+async function write(functionName,args=[],message='Submitting transaction…'){const{client}=await walletClient();busy=true;error='';notice=message;await render();try{const hash=await client.writeContract({address:CONTRACT,functionName,args,value:0n});notice=`Submitted ${short(hash)}. Waiting for FINALIZED…`;await render();const receipt=await waitFinalized(hash,client);notice=`FINALIZED · ${executionName(receipt)||'FINISHED_WITH_RETURN'}`;return{hash,receipt};}catch(e){error=friendly(e);notice='';throw e;}finally{busy=false;}}
 async function loadSummary(){const c=await readClient();summaryCache=parseSummary(await c.readContract({address:CONTRACT,functionName:'get_summary',args:[]}));return summaryCache;}
 async function loadUserState(user){if(!validAddress(user)){consentCache=null;actionCountCache=null;return;}const c=await readClient();let anyOk=false;try{consentCache=asBool(await c.readContract({address:CONTRACT,functionName:'has_valid_consent',args:[user]}));anyOk=true;}catch{consentCache=null;}try{actionCountCache=Number(parseResult(await c.readContract({address:CONTRACT,functionName:'get_action_count',args:[user]})));anyOk=true;}catch{actionCountCache=null;}parameterReadsAvailable=anyOk;}
 
