@@ -1,0 +1,13 @@
+{
+  "name": "CycleGuard",
+  "short_name": "CycleGuard",
+  "description": "GenLayer semantic guard for two-clause circular preconditions.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0d11",
+  "theme_color": "#0a0d11",
+  "icons": [
+    {"src":"/logo-64.png","sizes":"64x64","type":"image/png"},
+    {"src":"/logo-192.png","sizes":"192x192","type":"image/png"}
+  ]
+}
