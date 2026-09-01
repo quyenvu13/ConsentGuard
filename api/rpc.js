@@ -1,5 +1,5 @@
 const UPSTREAM = 'https://studio.genlayer.com/api';
-const SAFE_RETRY_METHODS = new Set(['eth_getTransactionReceipt','eth_getBalance','eth_call','eth_chainId','net_version','gen_call','gen_get_transaction_status']);
+const SAFE_RETRY_METHODS = new Set(['eth_getTransactionReceipt','eth_getTransactionByHash','eth_getBalance','eth_call','eth_chainId','net_version','gen_call','gen_get_transaction_status','gen_getTransactionStatus','gen_getTransactionReceipt','gen_dbg_traceTransaction']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default async function handler(req, res) {
