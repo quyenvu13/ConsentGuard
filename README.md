@@ -76,3 +76,9 @@ npm run test:local
 ## Testing status
 
 Static build and local mock/smoke checks are documented in `TESTING.md`. Fresh production wallet/runtime evidence on Vercel must be recorded only after it is actually observed; this repository does not claim unperformed production transactions.
+
+## Production runtime verification — Sep 1, 2026
+
+Fresh Vercel testing against contract `0xB13A47565248c9A11A74b2C20D71aB930960B8a2` verified the user-consent gate end to end. Test user `0x188f15bC55302ff2d55f0107300499aed23a831E` finalized `consent()` successfully at consent epoch 1, then finalized `protected_action()` with `FINISHED_WITH_RETURN`; the production UI automatically transitioned to `ALLOWED` without a page refresh.
+
+The current Studio RPC rejects parameterized `gen_call` reads that include an `Address` argument (`has_valid_consent(user)` and `get_action_count(user)`). The production frontend therefore does not poll those optional views. It verifies protected-action execution from the finalized GenVM result instead, while immutable/global state continues to come from `get_summary()`.
