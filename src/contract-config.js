@@ -1,6 +1,7 @@
 window.CONSENTGUARD_CONFIG = Object.freeze({
   projectName: 'ConsentGuard',
   network: 'GenLayer StudioNet',
-  contractAddress: '0xB13A47565248c9A11A74b2C20D71aB930960B8a2',
+  // Fresh V2 StudioNet deployment. Do not reuse the historical V1 address.
+  contractAddress: '0x5638456fcCBb1BeB8711B6A46bf1818caA32D533',
   explorerBase: 'https://explorer-studio.genlayer.com/address/',
 });

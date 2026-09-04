@@ -1,7 +1,9 @@
 import { readFile, writeFile, mkdir, rm, copyFile, cp } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 const dist = new URL('../dist/', import.meta.url);
-const EXPECTED_SHA = '2afea9ccffb7dff34fa581528eb669d0b2df996872a3e8d59f369d145fd0be55';
+const EXPECTED_SHA = '6a092389718cf2418293f8fbfca612c085602994af052c04b1f768f11b35a3f5';
+const ZERO='0x0000000000000000000000000000000000000000';
+const HISTORICAL=new Set(['0xb13a47565248c9a11a74b2c20d71ab930960b8a2']);
 await rm(dist,{recursive:true,force:true});
 await mkdir(new URL('../dist/assets/',import.meta.url),{recursive:true});
 await copyFile(new URL('../index.html',import.meta.url),new URL('../dist/index.html',import.meta.url));
@@ -16,8 +18,10 @@ const cfg=await readFile(new URL('../src/contract-config.js',import.meta.url),'u
 const match=cfg.match(/contractAddress:\s*'([^']*)'/);
 const address=match?.[1]||'';
 if(!/^0x[a-fA-F0-9]{40}$/.test(address)) throw new Error(`Invalid configured contract address: ${address}`);
-const manifest={name:'ConsentGuard',network:'GenLayer StudioNet',contract:address,contract_source_sha256:sha,built_at:new Date().toISOString()};
+if(HISTORICAL.has(address.toLowerCase())) throw new Error('Historical V1 contract address must not be reused for ConsentGuard V2');
+const deployed=address.toLowerCase()!==ZERO;
+const manifest={name:'ConsentGuard',version:'2.0',network:'GenLayer StudioNet',contract:address,deployment_status:deployed?'configured':'fresh_v2_deployment_required',contract_source_sha256:sha,built_at:new Date().toISOString()};
 await writeFile(new URL('../dist/build-manifest.json',import.meta.url),JSON.stringify(manifest,null,2)+'\n');
 console.log('PASS production build');
-console.log(`PASS contract ${address}`);
+console.log(deployed?`PASS fresh V2 contract ${address}`:'PASS pre-deploy mode (fresh V2 contract required)');
 console.log(`PASS source SHA ${sha}`);

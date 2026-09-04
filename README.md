@@ -1,65 +1,149 @@
-# ConsentGuard
+# ConsentGuard V2
 
-**AI-safe consent and terms evolution on GenLayer.**
+**Adversarial-safe consent epochs bound to auditable service actions on GenLayer.**
 
-ConsentGuard is the production web application for the previously approved `TermsDelta` Intelligent Contract logic. GenLayer validators classify each proposed terms update as either `MATERIAL_CHANGE` or `NON_MATERIAL_CHANGE`; deterministic contract state then decides whether the global consent epoch advances and whether a user's previous consent remains valid.
+ConsentGuard V2 directly addresses the steward request that V1's consent epoch be tied to a meaningful service action and that false `NON_MATERIAL_CHANGE` classifications be tested adversarially.
 
-## Live deployment
+The contract still uses GenLayer validators to compare complete terms documents against the epoch baseline, but V2 adds deterministic fail-safe guards, an inspectable classification report, and service-action receipts that prove exactly which consent epoch and terms versions authorized an action.
 
-- Network: GenLayer StudioNet
-- Fresh contract: `0xB13A47565248c9A11A74b2C20D71aB930960B8a2`
-- Explorer: `https://explorer-studio.genlayer.com/address/0xB13A47565248c9A11A74b2C20D71aB930960B8a2`
-- Frontend: deploy this repository to Vercel; the contract address is already configured.
+## Deployment status
 
-## Initial terms
+V2 changes the contract source, so the historical V1 deployment **must not be reused**.
 
-The fresh deployment was created with:
+```text
+Historical V1 (do not reuse): 0xB13A47565248c9A11A74b2C20D71aB930960B8a2
+V2 contract: 0x5638456fcCBb1BeB8711B6A46bf1818caA32D533
+Frontend config: 0x5638456fcCBb1BeB8711B6A46bf1818caA32D533
+```
+
+The frontend is pinned to the fresh V2 StudioNet deployment `0x5638456fcCBb1BeB8711B6A46bf1818caA32D533`. The historical V1 address remains denylisted.
+
+## Initial terms for the fresh deployment
 
 ```text
 Users may access the service for personal or commercial purposes. The service may collect basic account information required for operation. Users retain ownership of their submitted content. The provider may suspend accounts only for security incidents, fraud, or violations of these terms. Material changes to these terms require renewed user consent before protected actions continue.
 ```
 
-## What the app exposes
+## What changed in V2
 
-- **Overview** — live active version, consent epoch, latest semantic decision, active terms, wallet consent status and protected-action count.
-- **Terms** — publisher-only proposal flow using the contract's GenLayer semantic classifier.
-- **Consent** — any wallet can explicitly consent to the current epoch and check whether its consent is current.
-- **Protected actions** — deterministic proof that stale/missing consent is blocked and current consent is accepted.
-- **Explorer parity** — all pages link to the exact fresh StudioNet deployment.
+### 1. Consent is bound to a meaningful service action
 
-## Contract semantics
+The old generic `protected_action()` counter has been replaced by:
 
-`MATERIAL_CHANGE` advances both `active_version` and `consent_epoch`, invalidating prior user consent. `NON_MATERIAL_CHANGE` advances only `active_version`; existing consent remains valid. The epoch baseline prevents cumulative “salami-slicing” of many small wording changes.
+```text
+authorize_service_action(action_type, action_ref)
+```
 
-AI decides only the semantic category. Publisher authorization, version arithmetic, consent epochs, per-user consent and protected-action enforcement remain deterministic.
+Supported action types are deliberately concrete:
+
+```text
+SERVICE_ACCESS
+DATA_EXPORT
+CONTENT_PUBLISH
+```
+
+A successful authorization writes an on-chain receipt containing:
+
+- user wallet;
+- service action type;
+- external action reference;
+- current `consent_epoch`;
+- terms version the user explicitly consented to;
+- active terms version at the moment of authorization.
+
+The same wallet/action/reference tuple cannot be authorized twice. A downstream service can require a receipt before completing the referenced action.
+
+### 2. `NON_MATERIAL_CHANGE` is fail-safe
+
+The semantic adjudicator now returns a canonical report with:
+
+```text
+decision
+rights_changed
+ambiguity
+adversarial_signal
+basis
+```
+
+`NON_MATERIAL_CHANGE` is accepted **only** when all of the following are true:
+
+```text
+decision = NON_MATERIAL_CHANGE
+rights_changed = NO
+ambiguity = NO
+adversarial_signal = NO
+basis = EQUIVALENT_MEANING
+```
+
+Every other combination becomes `MATERIAL_CHANGE`.
+
+### 3. Deterministic adversarial backstops
+
+Before any LLM adjudication, the contract conservatively rejects:
+
+- prompt-injection-like document instructions such as “ignore previous instructions”, “respond with”, “output only”, or “classify as”;
+- newly introduced high-risk rights/obligation phrases such as additional fees, partner data sharing, sublicensing, arbitration, unilateral discretion, or “without notice”.
+
+These cases are finalized as `MATERIAL_CHANGE` without giving document text an opportunity to force a false non-material verdict.
+
+### 4. Ambiguity and omissions fail safe
+
+The validator prompt explicitly treats ambiguous rights changes and removed protective language as material. Invalid model output also fails safe to material.
+
+### 5. Salami-slicing protection remains
+
+Every proposed document is compared to `epoch_base_terms`, not merely the immediately previous wording. Harmless changes may advance `active_version` without moving `consent_epoch`, but later proposals must still remain semantically equivalent to the entire epoch baseline.
+
+## Contract views
+
+```text
+get_config()
+get_summary()
+get_evaluation(evaluation_id)
+get_service_action(receipt_id)
+has_valid_consent(user)
+```
+
+`get_evaluation` exposes the canonical safety report and the resulting version/epoch. `get_service_action` exposes the consent-bound action receipt.
+
+## Frontend
+
+The V2 app exposes:
+
+- **Overview** — version, consent epoch, action receipt count, active terms, and latest semantic report;
+- **Terms** — publisher proposal flow plus visible adversarial/fail-safe policy;
+- **Evaluations** — on-chain semantic decision history and safety flags;
+- **Consent** — explicit consent to the current epoch and active terms version;
+- **Service actions** — authorization of a concrete service action and display of the resulting on-chain receipt.
+
+## Adversarial contract vectors
+
+The repository contains `tests/adversarial_cases.json`, covering:
+
+- benign wording cleanup control;
+- prompt injection attempting to force `NON_MATERIAL_CHANGE`;
+- ambiguous partner-data sharing;
+- omission of protective language;
+- prompt injection with no rights delta;
+- cumulative semantic drift / salami slicing.
+
+Run the local structural gate with:
+
+```bash
+npm run test:adversarial
+```
+
+The semantic vectors marked `runtime_required` must still be executed against the fresh StudioNet V2 deployment before resubmission. See `TESTING.md`.
 
 ## Source parity
 
-The contract file in `contracts/ConsentGuard.py` is the accepted TermsDelta source under the fresh deployment filename. Its SHA256 is:
+Current V2 contract SHA256:
 
 ```text
-2afea9ccffb7dff34fa581528eb669d0b2df996872a3e8d59f369d145fd0be55
+6a092389718cf2418293f8fbfca612c085602994af052c04b1f768f11b35a3f5
 ```
 
-The build fails if that source changes.
-
-## Repository layout
-
-```text
-api/                 Vercel StudioNet RPC proxy
-contracts/           Deployed Intelligent Contract source
-public/              Logo, favicon, manifest and social image
-scripts/             Build/source/local smoke scripts
-src/                 Frontend source and contract config
-tests/               Runtime smoke vectors
-README.md
-TESTING.md
-CHANGELOG.md
-index.html
-package.json
-package-lock.json
-vercel.json
-```
+The build and source check fail if `contracts/ConsentGuard.py` changes unexpectedly.
 
 ## Build
 
@@ -67,35 +151,26 @@ vercel.json
 npm install
 npm run check:source
 npm run test:project
+npm run test:adversarial
 npm run build
 npm run test:local
 ```
 
-`npm install` has no external package dependencies. For a quick local preview after build, run `npm run dev` and open `http://localhost:4173`. The browser loads `genlayer-js` at runtime and uses `/api/rpc` on Vercel for StudioNet reads/finalization checks.
+Production builds require a valid V2 address and reject the historical V1 deployment. The build manifest records the configured V2 address and source hash.
 
-## Testing status
-
-Production runtime verification on Vercel is **PASS** against the fresh StudioNet deployment. The full observed sequence is documented in `TESTING.md`.
-
-## Production runtime verification — Sep 1, 2026
-
-Deployment:
+## Current verification status
 
 ```text
-Contract: 0xB13A47565248c9A11A74b2C20D71aB930960B8a2
-Publisher/deployer: 0x923a09d0D6e5C242e36C3c1D2071835917cC0bDF
-Test user: 0x188f15bC55302ff2d55f0107300499aed23a831E
+V2 source/static gates: PASS
+Fresh V2 StudioNet deployment: 0x5638456fcCBb1BeB8711B6A46bf1818caA32D533
+Consent-bound service-action runtime: PASS
+Benign NON_MATERIAL control: PASS
+Prompt-injection / adversarial fail-safe: PASS
+Stale-consent block + re-consent restore: PASS
+Ambiguous wording fail-safe: PASS
+Production Vercel V2 verification: pending
 ```
 
-Observed end-to-end behavior:
+Verified StudioNet runtime reached `active_version = 4` and `consent_epoch = 3`. The runtime evidence includes a `DATA_EXPORT` receipt at epoch 1/version 1, a `SERVICE_ACCESS` receipt that remained valid across a true non-material update (`consented_version = 1`, `terms_version = 2`), and a `CONTENT_PUBLISH` receipt after re-consent at epoch 2/version 3. Adversarial and ambiguous proposals both finalized as `MATERIAL_CHANGE`; the prompt-injection case was caught by `DETERMINISTIC_ADVERSARIAL_GUARD`.
 
-1. The test user consented to epoch 1 and `protected_action()` finalized with `FINISHED_WITH_RETURN`; the UI automatically showed `ALLOWED` without a page refresh.
-2. The publisher submitted a wording-only update. Validators returned `NON_MATERIAL_CHANGE`; `active_version` advanced from 1 to 2 while `consent_epoch` remained 1.
-3. The publisher then submitted a substantive rights change. Validators returned `MATERIAL_CHANGE`; `active_version` advanced from 2 to 3 and `consent_epoch` advanced from 1 to 2.
-4. Before re-consenting, the same test user called `protected_action()`. The contract finalized with `FINISHED_WITH_ERROR`, the UI showed `BLOCKED`, and the error message stated `Current terms consent is required.`
-5. The user consented to epoch 2. The UI showed `VALID CONSENT`.
-6. The user called `protected_action()` again. It finalized with `FINISHED_WITH_RETURN` and the UI automatically showed `ALLOWED`.
-
-This demonstrates the full intended safety property: non-material wording changes preserve consent, material semantic changes invalidate stale consent, and deterministic contract enforcement blocks protected actions until the user explicitly consents to the new epoch.
-
-The current Studio RPC rejects Address-argument `gen_call` reads used by `has_valid_consent(user)` and `get_action_count(user)`. Production therefore does not depend on those optional parameterized views. Global state still comes from `get_summary()`, while write outcomes are verified from finalized GenVM execution.
+Historical V1 runtime evidence remains historical only and is not treated as proof that the steward-requested V2 behavior works.

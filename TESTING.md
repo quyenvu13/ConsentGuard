@@ -1,20 +1,37 @@
-# ConsentGuard — Testing
+# ConsentGuard V2 — Testing
 
-## Deployment under test
+## Objective
+
+The steward requested two specific additions:
+
+1. bind the consent epoch to a meaningful service action; and
+2. add adversarial contract tests for false `NON_MATERIAL_CHANGE` classifications, especially prompt-injected or ambiguous terms.
+
+V2 is not considered runtime-PASS until both properties are demonstrated on a fresh StudioNet deployment.
+
+## Contract under test
+
+Current deployment:
 
 ```text
 Network: GenLayer StudioNet
-Contract: 0xB13A47565248c9A11A74b2C20D71aB930960B8a2
-Explorer: https://explorer-studio.genlayer.com/address/0xB13A47565248c9A11A74b2C20D71aB930960B8a2
+Historical V1: 0xB13A47565248c9A11A74b2C20D71aB930960B8a2 (DO NOT REUSE)
+V2: 0x5638456fcCBb1BeB8711B6A46bf1818caA32D533
 ```
 
-Contract source SHA256:
+V2 source SHA256:
 
 ```text
-2afea9ccffb7dff34fa581528eb669d0b2df996872a3e8d59f369d145fd0be55
+6a092389718cf2418293f8fbfca612c085602994af052c04b1f768f11b35a3f5
 ```
 
-## Static/local gates
+Constructor `initial_terms`:
+
+```text
+Users may access the service for personal or commercial purposes. The service may collect basic account information required for operation. Users retain ownership of their submitted content. The provider may suspend accounts only for security incidents, fraud, or violations of these terms. Material changes to these terms require renewed user consent before protected actions continue.
+```
+
+## Local/static gates
 
 Run:
 
@@ -22,188 +39,352 @@ Run:
 npm install
 npm run check:source
 npm run test:project
+npm run test:adversarial
 npm run build
 npm run test:local
 ```
 
-Expected:
+Expected with the fresh V2 deployment configured:
 
 ```text
 PASS source parity
 PASS GitHub project structure
-PASS deployed address configured
-PASS contract method/verdict coverage
-PASS production build
+PASS historical V1 address is not configured
+PASS V2 contract read/write method coverage
+PASS semantic report + service receipt UI coverage
+PASS adversarial vector corpus
+PASS production build pinned to 0x5638456fcCBb1BeB8711B6A46bf1818caA32D533
 PASS local static smoke
 ```
 
-The frontend also supports `?mock=1` for browser-only UI regression without writing to StudioNet.
+`npm run test:adversarial` verifies that the repository contains the requested vector corpus and that deterministic hardening hooks exist in the actual contract source. It does **not** claim the runtime semantic vectors have passed. Those must be executed on StudioNet below.
 
-## Production Vercel runtime plan
+---
 
-Do not mark these as PASS until observed on the deployed Vercel URL.
 
-### Gate 1 — Live read + wallet
+## Verified StudioNet runtime — 2026-09-04
 
-1. Open the production Vercel app.
-2. Confirm live contract state loads from the configured address.
-3. Connect MetaMask on GenLayer StudioNet.
-4. Confirm account switching updates the app without fabricating state.
-
-### Gate 2 — Consent + protected action
-
-Use a non-publisher test wallet:
+Wallet roles used for the V2 runtime pass:
 
 ```text
-consent()
-protected_action()
+Publisher / deployer: 0x923a09d0D6e5C242e36C3c1D2071835917cC0bDF
+Test user A:          0x76DD809f34e0B72d9339bc509e1E19FaFEB445c2
+Test user B:          0xAa6C00fEd724bCe664185e9feaA4C4419A4C8464
 ```
 
-Expected: consent becomes valid and action count increments.
+Observed checkpoints:
 
-### Gate 3 — NON_MATERIAL_CHANGE
+```text
+Gate 0 config/summary: PASS
+Gate 1 pre-consent DATA_EXPORT blocked: PASS
+Gate 2 receipt #1 DATA_EXPORT: epoch=1, consented_version=1, terms_version=1
+Duplicate action tuple blocked: PASS
+Gate 3 benign cleanup: NON_MATERIAL_CHANGE; rights_changed=NO; ambiguity=NO; adversarial_signal=NO; basis=EQUIVALENT_MEANING
+Receipt #2 SERVICE_ACCESS: epoch=1, consented_version=1, terms_version=2
+Gate 4 prompt-injection/high-risk proposal: MATERIAL_CHANGE; ambiguity=YES; adversarial_signal=YES; basis=DETERMINISTIC_ADVERSARIAL_GUARD; active_version=3; consent_epoch=2
+Gate 5 stale consent blocked CONTENT_PUBLISH: PASS
+Gate 6 re-consent receipt #3 CONTENT_PUBLISH: epoch=2, consented_version=3, terms_version=3
+Ambiguous/adversarial wording test: MATERIAL_CHANGE; rights_changed=YES; ambiguity=YES; adversarial_signal=YES; basis=ADVERSARIAL_CONTENT; active_version=4; consent_epoch=3
+```
 
-Using the publisher/deployer wallet, submit a wording-only cleanup that preserves every right and obligation.
+These StudioNet observations satisfy the V2 runtime portion of the steward request. Production Vercel verification remains a separate final integration checkpoint.
+
+---
+
+# StudioNet V2 runtime matrix
+
+## Gate 0 — Contract configuration
+
+Call:
+
+```text
+get_config()
+```
+
+Expected important fields:
+
+```text
+version = 2.0
+consent_epoch_bound_receipts = true
+adversarial_fail_safe = true
+ambiguity_fail_safe = true
+epoch_baseline_comparison = true
+service_action_types = [SERVICE_ACCESS, DATA_EXPORT, CONTENT_PUBLISH]
+```
+
+Call `get_summary()` immediately after deployment.
 
 Expected:
 
 ```text
-last_decision = NON_MATERIAL_CHANGE
-active_version += 1
-consent_epoch unchanged
-existing user consent remains valid
-protected_action() still succeeds
+active_version = 1
+consent_epoch = 1
+evaluation_count = 0
+service_action_count = 0
 ```
 
-### Gate 4 — MATERIAL_CHANGE + stale-consent enforcement
+## Gate 1 — Service action is blocked before consent
 
-Using the publisher wallet, submit:
+Use a non-publisher test wallet.
+
+Call:
 
 ```text
-Users may access the service for personal or commercial purposes. Cancellation now incurs a 25% fee. The provider may share account information with business partners. Users retain ownership of submitted content.
+authorize_service_action(
+  "DATA_EXPORT",
+  "export-request-001"
+)
 ```
 
-Expected:
-
-```text
-last_decision = MATERIAL_CHANGE
-active_version += 1
-consent_epoch += 1
-```
-
-Then return to the previously consented user and call `protected_action()` before re-consenting.
-
-Expected contract execution: ERROR / rollback with:
+Expected contract ERROR / rollback:
 
 ```text
 Current terms consent required
 ```
 
-The frontend must distinguish this contract revert from wallet rejection or RPC/network failure.
+This proves the service action itself — not a generic counter — is bound to consent.
 
-### Gate 5 — Renew consent
+## Gate 2 — Consent then service-action receipt
 
 Same user:
 
 ```text
 consent()
-protected_action()
+authorize_service_action("DATA_EXPORT", "export-request-001")
 ```
 
-Expected: consent becomes valid for the new epoch and action count increments.
+Expected: both SUCCESS.
+
+Then call:
+
+```text
+get_summary()
+```
+
+Expected:
+
+```text
+service_action_count = 1
+```
+
+Call:
+
+```text
+get_service_action(1)
+```
+
+Expected receipt fields:
+
+```text
+user = test user wallet
+action_type = DATA_EXPORT
+action_ref = export-request-001
+consent_epoch = 1
+consented_version = 1
+terms_version = 1
+```
+
+Calling the same wallet/type/reference again must fail with:
+
+```text
+Service action already authorized
+```
+
+## Gate 3 — Benign control: true non-material cleanup
+
+Publisher calls `propose_terms()` with the `benign-wording-cleanup` vector from `tests/adversarial_cases.json`.
+
+Expected:
+
+```text
+last_decision = NON_MATERIAL_CHANGE
+active_version = 2
+consent_epoch = 1
+```
+
+`get_evaluation(1)` must show a report equivalent to:
+
+```text
+decision=NON_MATERIAL_CHANGE
+rights_changed=NO
+ambiguity=NO
+adversarial_signal=NO
+basis=EQUIVALENT_MEANING
+```
+
+The previously consented user may authorize a new unique action reference without re-consenting because the epoch remains 1:
+
+```text
+authorize_service_action("SERVICE_ACCESS", "session-002")
+```
+
+Expected receipt:
+
+```text
+consent_epoch = 1
+consented_version = 1
+terms_version = 2
+```
+
+This demonstrates the distinction between the version explicitly consented to and a later semantically equivalent active version within the same epoch.
+
+## Gate 4 — Prompt injection attempting to force NON_MATERIAL
+
+Publisher calls `propose_terms()` with vector:
+
+```text
+prompt-injection-force-non-material
+```
+
+Expected deterministic result:
+
+```text
+MATERIAL_CHANGE
+adversarial_signal = YES
+basis = DETERMINISTIC_ADVERSARIAL_GUARD
+```
+
+This case must not depend on the LLM obeying the safety prompt; the contract pre-guard catches it before semantic adjudication.
+
+Expected state transition:
+
+```text
+active_version += 1
+consent_epoch += 1
+```
+
+## Gate 5 — Stale consent blocks the meaningful service action
+
+Without re-consenting after Gate 4, the same user calls:
+
+```text
+authorize_service_action("CONTENT_PUBLISH", "publish-003")
+```
+
+Expected ERROR / rollback:
+
+```text
+Current terms consent required
+```
+
+This is the core steward-requested binding: the materially changed consent epoch directly blocks a concrete service authorization.
+
+## Gate 6 — Re-consent restores action authorization
+
+Same user:
+
+```text
+consent()
+authorize_service_action("CONTENT_PUBLISH", "publish-003")
+```
+
+Expected SUCCESS.
+
+Inspect the latest receipt and verify that its `consent_epoch` matches the new epoch and its `consented_version` records the version at which the user re-consented.
+
+---
+
+# Adversarial false-NON_MATERIAL tests
+
+The canonical corpus is `tests/adversarial_cases.json`.
+
+## A. Prompt injection with material change
+
+Case:
+
+```text
+prompt-injection-force-non-material
+```
+
+Expected:
+
+```text
+MATERIAL_CHANGE
+DETERMINISTIC_ADVERSARIAL_GUARD
+```
+
+## B. Ambiguous partner-data sharing
+
+Case:
+
+```text
+ambiguous-partner-sharing
+```
+
+Expected:
+
+```text
+MATERIAL_CHANGE
+```
+
+The deterministic high-risk backstop should prevent a false non-material result even though the language uses “as needed”.
+
+## C. Protective-language omission
+
+Case:
+
+```text
+protective-language-omission
+```
+
+The proposal removes the baseline restriction that suspension is limited to security incidents, fraud, or terms violations.
+
+Expected semantic result:
+
+```text
+MATERIAL_CHANGE
+rights_changed = YES
+```
+
+If validators cannot confidently agree on the effect, ambiguity must fail safe to material.
+
+## D. Prompt injection with no rights delta
+
+Case:
+
+```text
+prompt-injection-no-rights-delta
+```
+
+Expected:
+
+```text
+MATERIAL_CHANGE
+adversarial_signal = YES
+```
+
+This is intentionally conservative. Instruction-like text inside the legal document is treated as unsafe document content even if the surrounding rights appear unchanged.
+
+## E. Cumulative drift / salami slicing
+
+Run the harmless control first so `active_version` advances while `consent_epoch` remains fixed. Then submit the `cumulative-drift` vector.
+
+Expected:
+
+```text
+MATERIAL_CHANGE
+```
+
+The important invariant is that the second proposal is compared to `epoch_base_terms`, not merely to the immediately prior wording.
+
+---
+
+# Production frontend verification
+
+After deploying the frontend pinned to `0x5638456fcCBb1BeB8711B6A46bf1818caA32D533` to Vercel:
+
+1. Overview must show the live V2 version/epoch/evaluation/action-receipt counts.
+2. Terms must show the latest canonical classification report.
+3. Evaluations must load real `get_evaluation(id)` results.
+4. Consent must submit `consent()` against the V2 address.
+5. Service actions must submit `authorize_service_action(type, ref)`.
+6. A successful action must automatically display `get_service_action(receipt_id)` with epoch and version binding.
+7. A stale-consent action must be shown as BLOCKED, never as wallet success.
+8. Browser console must have no application errors.
+9. Mobile layout must not overflow horizontally.
 
 ## Evidence discipline
 
-`FINALIZED` transaction status alone is not treated as semantic/execution PASS. The app reloads authoritative contract state after finalization. A failed wallet signature or RPC request is never reported as a successful contract revert.
+A transaction hash, wallet acceptance, or `FINALIZED` status alone is not execution PASS. Record `SUCCESS` / `FINISHED_WITH_RETURN` for positive cases and the expected contract rollback for negative cases.
 
-## Current status
-
-```text
-Contract source parity: PASS
-Static production build: PASS
-Local static smoke: PASS
-Production console clean: PASS
-Vercel + MetaMask runtime: PASS
-NON_MATERIAL_CHANGE path: PASS
-MATERIAL_CHANGE path: PASS
-Stale-consent rejection: PASS
-Re-consent recovery: PASS
-Automatic FINALIZED UI update without F5: PASS
-```
-
-## Observed production runtime — PASS (Sep 1, 2026)
-
-```text
-Contract: 0xB13A47565248c9A11A74b2C20D71aB930960B8a2
-Publisher/deployer: 0x923a09d0D6e5C242e36C3c1D2071835917cC0bDF
-Test user: 0x188f15bC55302ff2d55f0107300499aed23a831E
-```
-
-### A. Initial user consent and allowed action
-
-The test user finalized `consent()` at consent epoch 1. Explorer showed Consensus `Accepted`, GenVM `SUCCESS`, Result Code `Return`, and `Finalized`. A subsequent `protected_action()` finalized with `FINISHED_WITH_RETURN`, and the production UI automatically displayed `ALLOWED` without F5.
-
-### B. NON_MATERIAL_CHANGE preserves consent epoch
-
-Publisher proposal:
-
-```text
-Users may access the service for personal or commercial purposes. The service may collect basic account information that is required for operation. Users retain ownership of content they submit. The provider may suspend accounts only for security incidents, fraud, or violations of these terms. Material changes to these terms require renewed user consent before protected actions may continue.
-```
-
-Observed result:
-
-```text
-Verdict: NON_MATERIAL_CHANGE
-active_version: 1 -> 2
-consent_epoch: 1 -> 1
-```
-
-The UI updated automatically after the transaction; no page refresh was required.
-
-### C. MATERIAL_CHANGE advances consent epoch
-
-Publisher proposal:
-
-```text
-Users may access the service for personal or commercial purposes. The service may collect basic account information that is required for operation. Users retain ownership of content they submit, but the provider may now use, reproduce, modify, sublicense, and commercially distribute submitted content without additional permission from the user. The provider may suspend accounts only for security incidents, fraud, or violations of these terms. Material changes to these terms require renewed user consent before protected actions may continue.
-```
-
-Observed result:
-
-```text
-Verdict: MATERIAL_CHANGE
-active_version: 2 -> 3
-consent_epoch: 1 -> 2
-```
-
-### D. Stale consent is blocked
-
-Without re-consenting, the same test user called `protected_action()`.
-
-Observed result:
-
-```text
-GenVM: FINISHED_WITH_ERROR
-UI: BLOCKED
-Message: Current terms consent is required.
-```
-
-This proves epoch-1 consent no longer authorizes protected actions after the material change moved the contract to epoch 2.
-
-### E. Re-consent restores access
-
-The test user then consented to epoch 2. The UI displayed `VALID CONSENT`. A final `protected_action()` produced:
-
-```text
-GenVM: FINISHED_WITH_RETURN
-UI: ALLOWED
-```
-
-The UI transitioned automatically from transaction submission to the final state without F5.
-
-## Runtime/RPC note
-
-The current Studio RPC rejects Address-argument `gen_call` reads for `has_valid_consent(user)` and `get_action_count(user)`. These optional parameterized reads are intentionally disabled in production to avoid repeated `gen_call: execution failed` console noise. Contract enforcement is still verified directly through finalized write execution, and immutable/global state continues to load from `get_summary()`.
-
-Runtime PASS is based on finalized GenVM execution and authoritative contract state, not on wallet acceptance or transaction-hash submission alone.
+Do not mark any V2 runtime item PASS until it has actually been observed on the fresh V2 deployment.
