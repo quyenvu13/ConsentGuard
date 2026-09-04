@@ -87,7 +87,7 @@ Gate 6 re-consent receipt #3 CONTENT_PUBLISH: epoch=2, consented_version=3, term
 Ambiguous/adversarial wording test: MATERIAL_CHANGE; rights_changed=YES; ambiguity=YES; adversarial_signal=YES; basis=ADVERSARIAL_CONTENT; active_version=4; consent_epoch=3
 ```
 
-These StudioNet observations satisfy the V2 runtime portion of the steward request. Production Vercel verification remains a separate final integration checkpoint.
+These StudioNet observations satisfy the V2 runtime portion of the steward request. Production Vercel verification was also completed successfully against the same V2 deployment.
 
 ---
 
@@ -371,7 +371,19 @@ The important invariant is that the second proposal is compared to `epoch_base_t
 
 # Production frontend verification
 
-After deploying the frontend pinned to `0x5638456fcCBb1BeB8711B6A46bf1818caA32D533` to Vercel:
+Verified production URL: https://consent-guard-woad.vercel.app/
+
+Observed on 2026-09-04 against `0x5638456fcCBb1BeB8711B6A46bf1818caA32D533`:
+
+```text
+Overview live state: PASS — active_version=4, consent_epoch=3, action_receipts=3, last_decision=MATERIAL_CHANGE
+Evaluations history: PASS — #1 NON_MATERIAL_CHANGE, #2 MATERIAL_CHANGE / DETERMINISTIC_ADVERSARIAL_GUARD, #3 MATERIAL_CHANGE / ADVERSARIAL_CONTENT
+Service action receipt view: PASS — receipt #3 CONTENT_PUBLISH, consent_epoch=2, consented_version=3, terms_version=3
+Contract footer/config: PASS — V2 address 0x5638456fcCBb1BeB8711B6A46bf1818caA32D533
+Desktop production layout: PASS
+```
+
+Production checklist:
 
 1. Overview must show the live V2 version/epoch/evaluation/action-receipt counts.
 2. Terms must show the latest canonical classification report.

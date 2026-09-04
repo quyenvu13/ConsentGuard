@@ -133,7 +133,7 @@ Run the local structural gate with:
 npm run test:adversarial
 ```
 
-The semantic vectors marked `runtime_required` must still be executed against the fresh StudioNet V2 deployment before resubmission. See `TESTING.md`.
+The semantic vectors marked `runtime_required` were executed against the fresh StudioNet V2 deployment and passed. See `TESTING.md` for the observed runtime evidence.
 
 ## Source parity
 
@@ -168,9 +168,11 @@ Benign NON_MATERIAL control: PASS
 Prompt-injection / adversarial fail-safe: PASS
 Stale-consent block + re-consent restore: PASS
 Ambiguous wording fail-safe: PASS
-Production Vercel V2 verification: pending
+Production Vercel V2 verification: PASS — https://consent-guard-woad.vercel.app/
 ```
 
 Verified StudioNet runtime reached `active_version = 4` and `consent_epoch = 3`. The runtime evidence includes a `DATA_EXPORT` receipt at epoch 1/version 1, a `SERVICE_ACCESS` receipt that remained valid across a true non-material update (`consented_version = 1`, `terms_version = 2`), and a `CONTENT_PUBLISH` receipt after re-consent at epoch 2/version 3. Adversarial and ambiguous proposals both finalized as `MATERIAL_CHANGE`; the prompt-injection case was caught by `DETERMINISTIC_ADVERSARIAL_GUARD`.
+
+Production Vercel verification also passed against the same V2 deployment: Overview exposed the live version/epoch/receipt counts, Evaluations rendered the real on-chain reports, and Service actions rendered the epoch/version-bound receipt data.
 
 Historical V1 runtime evidence remains historical only and is not treated as proof that the steward-requested V2 behavior works.
